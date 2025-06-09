@@ -15,14 +15,7 @@ import numpy as np
 rcParams['font.sans-serif'] = ['SimHei']
 rcParams['axes.unicode_minus'] = False
 
-
-def parse_csv(file_path):
-    df = pd.read_csv(file_path)
-    df['datetime'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    df.dropna(subset=['datetime'], inplace=True)
-    df['delta_seconds'] = (df['datetime'] - df['datetime'].min()).dt.total_seconds()
-    return df
-
+from feature import parse_complex_csv
 
 class MultiFilePlotterApp:
     def __init__(self, root):
@@ -59,6 +52,16 @@ class MultiFilePlotterApp:
         # 绑定 trace 方法
         self.col_count_var.trace("w", lambda *args: self.update_plot())
 
+        # 添加 x 轴选择下拉框
+        tk.Label(control_frame, text="选择 X 轴列：", font=('Arial', 12)).pack(pady=10)
+        self.x_axis_var = tk.StringVar(value="delta_seconds")  # 默认使用 delta_seconds
+        self.x_axis_selector = ttk.Combobox(control_frame, textvariable=self.x_axis_var, state="readonly")
+        self.x_axis_selector.pack()
+        self.x_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
+
+        # 添加导出按钮
+        tk.Button(control_frame, text="导出图片", command=self.export_plot).pack(pady=10)
+
         # 右侧：绘图面板
         self.fig = plt.Figure(figsize=(10, 8))
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
@@ -72,11 +75,18 @@ class MultiFilePlotterApp:
         for file_path in files:
             file_name = file_path.split("/")[-1]
             try:
-                df = parse_csv(file_path)
+                df = parse_complex_csv(file_path)
                 self.all_data[file_name] = df
                 self.available_fields.update(df.columns.difference(['timestamp', 'datetime', 'delta_seconds']))
             except Exception as e:
                 messagebox.showerror("读取失败", f"{file_name} 解析失败：{e}")
+
+        # 更新 x 轴选择下拉框的选项
+        if self.all_data:
+            sample_df = next(iter(self.all_data.values()))
+            self.x_axis_selector['values'] = list(sample_df.columns)
+            if self.x_axis_var.get() not in sample_df.columns:
+                self.x_axis_var.set("delta_seconds")  # 默认值
 
         self.update_checkboxes()
         self.update_plot()
@@ -86,6 +96,20 @@ class MultiFilePlotterApp:
         self.available_fields.clear()
         self.update_checkboxes()
         self.update_plot()
+
+    def export_plot(self):
+        if not self.all_data:
+            messagebox.showwarning("警告", "没有可导出的数据！")
+            return
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".png",
+                                                 filetypes=[("PNG files", "*.png"), ("All files", "*.*")])
+        if file_path:
+            try:
+                self.fig.savefig(file_path, dpi=300)
+                messagebox.showinfo("成功", f"图片已成功保存到：{file_path}")
+            except Exception as e:
+                messagebox.showerror("错误", f"图片保存失败：{e}")
 
     def update_checkboxes(self):
         for widget in self.checkbuttons_frame.winfo_children():
@@ -114,6 +138,9 @@ class MultiFilePlotterApp:
         num_fields = len(selected)
         n_rows = math.ceil(num_fields / n_cols)
 
+        # 获取选中的 x 轴列
+        x_axis_column = self.x_axis_var.get()
+
         # axes = self.fig.subplots(n_rows, n_cols, sharex=True)
         axes = np.array(self.fig.subplots(n_rows, n_cols, sharex=True)).flatten().tolist()
 
@@ -122,7 +149,7 @@ class MultiFilePlotterApp:
             ax = axes[idx]
             for file_name, df in self.all_data.items():
                 if field in df.columns:
-                    ax.plot(df['delta_seconds'], df[field], label=file_name)
+                    ax.plot(df[x_axis_column], df[field], marker='o', markersize=2, alpha=0.7, label=file_name)
             ax.set_title(field)
             ax.grid(True)
             ax.legend(fontsize='small')
@@ -132,7 +159,7 @@ class MultiFilePlotterApp:
             self.fig.delaxes(axes[j])
 
         for ax in axes[-n_cols:]:
-            ax.set_xlabel("时间（秒）")
+            ax.set_xlabel(x_axis_column)
 
         self.fig.tight_layout()
         self.canvas.draw()
