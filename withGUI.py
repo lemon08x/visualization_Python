@@ -1,10 +1,10 @@
 import sys
 import matplotlib
 matplotlib.use('TkAgg')
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib import rcParams
-import pandas as pd
 import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import filedialog, messagebox
@@ -15,7 +15,7 @@ import numpy as np
 rcParams['font.sans-serif'] = ['SimHei']
 rcParams['axes.unicode_minus'] = False
 
-from feature import parse_complex_csv
+from Feature.feature import parse_complex_csv
 
 class MultiFilePlotterApp:
     def __init__(self, root):
@@ -86,7 +86,7 @@ class MultiFilePlotterApp:
             sample_df = next(iter(self.all_data.values()))
             self.x_axis_selector['values'] = list(sample_df.columns)
             if self.x_axis_var.get() not in sample_df.columns:
-                self.x_axis_var.set("delta_seconds")  # 默认值
+                self.x_axis_var.set("timestamp")  # 默认值
 
         self.update_checkboxes()
         self.update_plot()
