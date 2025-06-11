@@ -1,7 +1,6 @@
 import sys
 import matplotlib
 matplotlib.use('TkAgg')
-import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib import rcParams
@@ -10,12 +9,15 @@ import tkinter.ttk as ttk
 from tkinter import filedialog, messagebox
 import math
 import numpy as np
+from io import BytesIO
+import win32clipboard
+from PIL import Image
 
 # 中文支持
 rcParams['font.sans-serif'] = ['SimHei']
 rcParams['axes.unicode_minus'] = False
 
-from Feature.feature import parse_complex_csv
+from Feature import parse_complex_csv, plot_with_matplotlib, plot_with_seaborn, plot_with_plotly
 
 class MultiFilePlotterApp:
     def __init__(self, root):
@@ -41,6 +43,14 @@ class MultiFilePlotterApp:
         self.checkbuttons_frame = tk.Frame(control_frame)
         self.checkbuttons_frame.pack(fill=tk.Y, expand=True)
 
+        # 绘图方式选择
+        tk.Label(control_frame, text="绘图方式：", font=('Arial', 12)).pack(pady=10)
+        self.plot_backend_var = tk.StringVar(value="matplotlib")
+        self.plot_backend_selector = ttk.Combobox(control_frame, textvariable=self.plot_backend_var,
+                                                  values=["matplotlib", "seaborn", "plotly"], state="readonly")
+        self.plot_backend_selector.pack()
+        self.plot_backend_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
+
         # 图表列数选择
         tk.Label(control_frame, text="图表列数：", font=('Arial', 12)).pack(pady=10)
         self.col_count_var = tk.StringVar(value="1")  # 默认1列
@@ -49,8 +59,8 @@ class MultiFilePlotterApp:
         self.col_selector.pack()
         self.col_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
 
-        # 绑定 trace 方法
-        self.col_count_var.trace("w", lambda *args: self.update_plot())
+        # # 绑定 trace 方法
+        # self.col_count_var.trace("w", lambda *args: self.update_plot())
 
         # 添加 x 轴选择下拉框
         tk.Label(control_frame, text="选择 X 轴列：", font=('Arial', 12)).pack(pady=10)
@@ -59,8 +69,16 @@ class MultiFilePlotterApp:
         self.x_axis_selector.pack()
         self.x_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
 
-        # 添加导出按钮
-        tk.Button(control_frame, text="导出图片", command=self.export_plot).pack(pady=10)
+        # # 添加导出按钮
+        # tk.Button(control_frame, text="导出图片", command=self.export_plot).pack(pady=10)
+        # tk.Button(control_frame, text="复制到剪切板", command=self.copy_plot_to_clipboard).pack(pady=5)
+
+        # 添加导出和复制按钮的水平布局
+        button_frame = tk.Frame(control_frame)
+        button_frame.pack(pady=10)
+
+        tk.Button(button_frame, text="导出图片", command=self.export_plot).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="复制到剪切板", command=self.copy_plot_to_clipboard).pack(side=tk.LEFT, padx=5)
 
         # 右侧：绘图面板
         self.fig = plt.Figure(figsize=(10, 8))
@@ -111,6 +129,37 @@ class MultiFilePlotterApp:
             except Exception as e:
                 messagebox.showerror("错误", f"图片保存失败：{e}")
 
+    def copy_plot_to_clipboard(self):
+        if not self.all_data:
+            messagebox.showwarning("警告", "没有可复制的图像！")
+            return
+
+        try:
+            # 保存当前图像到 BytesIO 对象
+            buf = BytesIO()
+            self.fig.savefig(buf, format='png', dpi=300)
+            buf.seek(0)
+
+            # 使用 PIL 打开并转换为 RGB 模式
+            image = Image.open(buf).convert("RGB")
+
+            # 转换为 bitmap 数据
+            output = BytesIO()
+            image.save(output, 'BMP')
+            data = output.getvalue()[14:]  # BMP 文件头的前 14 个字节需要去除
+            output.close()
+
+            # 设置剪贴板内容为图片
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+
+            messagebox.showinfo("成功", "图像已复制到剪贴板！")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"复制失败：{e}")
+
     def update_checkboxes(self):
         for widget in self.checkbuttons_frame.winfo_children():
             widget.destroy()
@@ -133,36 +182,27 @@ class MultiFilePlotterApp:
         try:
             n_cols = int(self.col_count_var.get())
         except ValueError:
-            n_cols = 2  # fallback
+            n_cols = 2
 
-        num_fields = len(selected)
-        n_rows = math.ceil(num_fields / n_cols)
-
-        # 获取选中的 x 轴列
         x_axis_column = self.x_axis_var.get()
+        backend = self.plot_backend_var.get()
 
-        # axes = self.fig.subplots(n_rows, n_cols, sharex=True)
-        axes = np.array(self.fig.subplots(n_rows, n_cols, sharex=True)).flatten().tolist()
+        try:
+            if backend == "matplotlib":
+                plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols)
+            elif backend == "seaborn":
+                plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols)
+            elif backend == "plotly":
+                plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols)
+                return
+            else:
+                messagebox.showerror("错误", f"未知绘图方式：{backend}")
+                return
 
+            self.canvas.draw()
 
-        for idx, field in enumerate(selected):
-            ax = axes[idx]
-            for file_name, df in self.all_data.items():
-                if field in df.columns:
-                    ax.plot(df[x_axis_column], df[field], marker='o', markersize=2, alpha=0.7, label=file_name)
-            ax.set_title(field)
-            ax.grid(True)
-            ax.legend(fontsize='small')
-
-        # 隐藏多余图
-        for j in range(len(selected), len(axes)):
-            self.fig.delaxes(axes[j])
-
-        for ax in axes[-n_cols:]:
-            ax.set_xlabel(x_axis_column)
-
-        self.fig.tight_layout()
-        self.canvas.draw()
+        except Exception as e:
+            messagebox.showerror("绘图失败", f"发生错误：{e}")
 
 
 if __name__ == '__main__':
