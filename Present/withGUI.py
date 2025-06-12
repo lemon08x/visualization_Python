@@ -7,8 +7,6 @@ from matplotlib import rcParams
 import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import filedialog, messagebox
-import math
-import numpy as np
 from io import BytesIO
 import win32clipboard
 from PIL import Image

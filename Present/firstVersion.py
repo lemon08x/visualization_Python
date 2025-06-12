@@ -37,13 +37,13 @@ def plot_rate_trends(df, output_file='output/rate_trends.png'):
 
 if __name__ == '__main__':
     # 输入路径
-    input_file = 'data/huawei_ue_1_monitor_5g.csv'
+    input_file = '../data/huawei_ue_1_monitor_5g.csv'
 
     # 解析CSV并获取DataFrame
     df = parse_complex_csv(input_file)
 
     # 将 DataFrame 保存到文件
-    output_file = 'output/ue_28_monitor_5g_saved.csv'
+    output_file = '../output/ue_28_monitor_5g_saved.csv'
     df.to_csv(output_file, index=False, encoding='utf-8')
 
     print("当前 DataFrame 列名：", df.columns.tolist())
