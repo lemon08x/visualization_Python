@@ -1,4 +1,5 @@
 # python
+import os
 import pandas as pd
 import logging
 from datetime import datetime
@@ -33,7 +34,11 @@ def parse_complex_csv(file_path):
     df['pd_time'] = df['timestamp'].apply(fix_timestamp)
 
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')
-    output_file = f'output/{current_time}.csv'
+
+    output_dir = 'output'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_file = f'{output_dir}/{current_time}.csv'
     df.to_csv(output_file, index=False, encoding='utf-8')
 
     if pd.api.types.is_datetime64_any_dtype(df['pd_time']):
