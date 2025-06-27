@@ -25,6 +25,15 @@ class MultiFilePlotterApp:
         self.available_fields = set()
 
         self.setup_ui()
+        self.plot_style = {
+            "font": "SimHei",
+            "line_width": 1.5,
+            "marker_size": 4,
+            "alpha": 0.85,
+            "color_palette": "tab10",
+            "title_size": 13,
+            "label_size": 10,
+        }
 
     def setup_ui(self):
         self.root.title("多文件字段对比绘图")
@@ -60,6 +69,8 @@ class MultiFilePlotterApp:
         # # 绑定 trace 方法
         # self.col_count_var.trace("w", lambda *args: self.update_plot())
 
+        tk.Button(control_frame, text="图表风格设置", command=self.open_style_config).pack(pady=10)
+
         # 添加 x 轴选择下拉框
         tk.Label(control_frame, text="选择 X 轴列：", font=('Arial', 12)).pack(pady=10)
         self.x_axis_var = tk.StringVar(value="delta_seconds")  # 默认使用 delta_seconds
@@ -67,9 +78,13 @@ class MultiFilePlotterApp:
         self.x_axis_selector.pack()
         self.x_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
 
-        # # 添加导出按钮
-        # tk.Button(control_frame, text="导出图片", command=self.export_plot).pack(pady=10)
-        # tk.Button(control_frame, text="复制到剪切板", command=self.copy_plot_to_clipboard).pack(pady=5)
+        # 添加右 Y 轴选择下拉框（默认空）
+        tk.Label(control_frame, text="右侧 Y 轴列（可选）：", font=('Arial', 12)).pack(pady=10)
+        self.right_y_axis_var = tk.StringVar(value="")  # 默认不选
+        self.right_y_axis_selector = ttk.Combobox(control_frame, textvariable=self.right_y_axis_var, state="readonly")
+        self.right_y_axis_selector['values'] = [""]  # 空表示不启用右轴
+        self.right_y_axis_selector.pack()
+        self.right_y_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
 
         # 添加导出和复制按钮的水平布局
         button_frame = tk.Frame(control_frame)
@@ -103,6 +118,11 @@ class MultiFilePlotterApp:
             self.x_axis_selector['values'] = list(sample_df.columns)
             if self.x_axis_var.get() not in sample_df.columns:
                 self.x_axis_var.set("timestamp")  # 默认值
+
+            # 更新右 Y 轴字段下拉框
+            self.right_y_axis_selector['values'] = [""] + sorted(self.available_fields)
+            if self.right_y_axis_var.get() not in self.right_y_axis_selector['values']:
+                self.right_y_axis_var.set("")
 
         self.update_checkboxes()
         self.update_plot()
@@ -169,6 +189,49 @@ class MultiFilePlotterApp:
             chk.pack(anchor='w')
             self.selected_fields[col] = var
 
+    def open_style_config(self):
+        win = tk.Toplevel(self.root)
+        win.title("图表风格设置")
+        win.geometry("350x400")
+
+        entries = {}
+
+        def add_entry(label, key):
+            tk.Label(win, text=label).pack(pady=3)
+            var = tk.StringVar(value=str(self.plot_style[key]))
+            entry = tk.Entry(win, textvariable=var)
+            entry.pack(pady=2)
+            entries[key] = var
+
+        style_fields = {
+            "字体": "font",
+            "线宽": "line_width",
+            "点大小": "marker_size",
+            "透明度": "alpha",
+            "配色方案（如 tab10 / Set2）": "color_palette",
+            "标题字体大小": "title_size",
+            "标签字体大小": "label_size",
+        }
+
+        for label, key in style_fields.items():
+            add_entry(label, key)
+
+        def apply_style():
+            for key, var in entries.items():
+                val = var.get()
+                try:
+                    if key in ["line_width", "marker_size", "alpha", "title_size", "label_size"]:
+                        self.plot_style[key] = float(val)
+                    else:
+                        self.plot_style[key] = val
+                except ValueError:
+                    messagebox.showerror("输入错误", f"参数 {key} 格式不正确")
+
+            win.destroy()
+            self.update_plot()
+
+        tk.Button(win, text="应用样式并更新图表", command=apply_style).pack(pady=20)
+
     def update_plot(self):
         selected = [field for field, var in self.selected_fields.items() if var.get()]
         self.fig.clf()
@@ -185,13 +248,19 @@ class MultiFilePlotterApp:
         x_axis_column = self.x_axis_var.get()
         backend = self.plot_backend_var.get()
 
+        right_y_axis = self.right_y_axis_var.get() or None  # 为空字符串则不启用
+
         try:
             if backend == "matplotlib":
-                plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols)
+                # plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols)
+                # plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
+                plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
             elif backend == "seaborn":
-                plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols)
+                # plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
+                plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
             elif backend == "plotly":
-                plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols)
+                # plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
+                plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
                 return
             else:
                 messagebox.showerror("错误", f"未知绘图方式：{backend}")

@@ -35,11 +35,11 @@ def parse_complex_csv(file_path):
 
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')
 
-    output_dir = 'output'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    output_file = f'{output_dir}/{current_time}.csv'
-    df.to_csv(output_file, index=False, encoding='utf-8')
+    # output_dir = 'output'
+    # if not os.path.exists(output_dir):
+    #     os.makedirs(output_dir)
+    # output_file = f'{output_dir}/{current_time}.csv'
+    # df.to_csv(output_file, index=False, encoding='utf-8')
 
     if pd.api.types.is_datetime64_any_dtype(df['pd_time']):
         df['delta_seconds'] = (df['pd_time'] - df['pd_time'].min()).dt.total_seconds()
