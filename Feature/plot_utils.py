@@ -40,28 +40,20 @@ def plot_with_matplotlib(fig, data_dict, selected_fields, x_axis_column, n_cols,
         ax.grid(True)
         ax.legend(fontsize=8)
 
-        if right_y_axis and right_y_axis in df.columns:
+        if right_y_axis and isinstance(right_y_axis, list) and len(right_y_axis) > 0:
             ax2 = ax.twinx()
-            for file_idx, (file_name, df) in enumerate(data_dict.items()):
-                if right_y_axis in df.columns:
-                    # ax2.plot(df[x_axis_column], df[right_y_axis],
-                    #          linestyle='--', color='red', alpha=0.5,
-                    #          linewidth=style['line_width'], label=f"{file_name}: {right_y_axis}")
-                    ax2.plot(df[x_axis_column], df[right_y_axis],
-                             linestyle=':',  # 改为点状线（比虚线更稀疏）
-                             markersize=0,  # 确保不显示数据点标记
-                             markevery=8,  # 每8个点显示一个标记（当需要标记时）
-                             dashes=(2, 4),  # 自定义虚线样式：2点线段+4点间隔（可选）
-                             color='red',
-                             alpha=0.3,  # 进一步降低透明度
-                             linewidth=style['line_width'] * 0.7,  # 适当降低线宽
-                             label=f"{file_name}: {right_y_axis}")
-            ax2.set_ylabel(right_y_axis,
-                           fontsize=style['label_size'] + 1,
-                           color='firebrick',
-                           rotation=270,
-                           labelpad=12,
-                           fontweight='bold')
+            for field in right_y_axis:
+                for file_name, df in data_dict.items():
+                    if field in df.columns:
+                        ax2.plot(df[x_axis_column], df[field], linestyle='--',
+                                 linewidth=style['line_width'], alpha=0.6,
+                                 label=f"{file_name}: {field}")
+            ax2.set_ylabel(" / ".join(right_y_axis), fontsize=style['label_size'] + 1,
+                           color='firebrick', fontweight='bold', labelpad=12)
+            # # 合并图例
+            # lines, labels = ax.get_legend_handles_labels()
+            # lines2, labels2 = ax2.get_legend_handles_labels()
+            # ax2.legend(lines + lines2, labels + labels2, fontsize='small')
 
     for j in range(len(selected_fields), len(axes)):
         fig.delaxes(axes[j])
@@ -70,12 +62,16 @@ def plot_with_matplotlib(fig, data_dict, selected_fields, x_axis_column, n_cols,
 
     fig.tight_layout()
 
-
 def plot_with_seaborn(fig, data_dict, selected_fields, x_axis_column, n_cols, right_y_axis=None, style=None):
     if style is None:
         style = DEFAULT_STYLE
 
-    sns.set_theme(style="whitegrid", font=style['font'], rc={'axes.labelsize': style['label_size']})
+    import seaborn as sns
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    sns.set_theme(style="whitegrid", font=style['font'])
 
     combined = []
     for file_name, df in data_dict.items():
@@ -88,24 +84,53 @@ def plot_with_seaborn(fig, data_dict, selected_fields, x_axis_column, n_cols, ri
     n_rows = math.ceil(num_fields / n_cols)
     axes = np.array(fig.subplots(n_rows, n_cols)).flatten().tolist()
 
-    palette = sns.color_palette(style['color_palette'], len(data_dict))
+    main_palette = sns.color_palette(style['color_palette'], len(data_dict))
 
     for idx, field in enumerate(selected_fields):
         ax = axes[idx]
-        sns.lineplot(data=df_all, x=x_axis_column, y=field, hue="__file__", ax=ax,
-                     linewidth=style['line_width'], marker='o', palette=palette)
+
+        # 主图字段绘制
+        sns.lineplot(
+            data=df_all[df_all[field].notna()],
+            x=x_axis_column, y=field,
+            hue="__file__",
+            ax=ax,
+            errorbar=None,  # <-- Corrected parameter
+            estimator=None,
+            linewidth=style['line_width'],
+            marker='o',
+            palette=main_palette,
+            legend=(idx == 0)
+        )
         ax.set_title(field, fontsize=style['title_size'])
         ax.set_xlabel(x_axis_column, fontsize=style['label_size'])
         ax.set_ylabel(field, fontsize=style['label_size'])
 
-        if right_y_axis and right_y_axis in df_all.columns:
+        if right_y_axis and isinstance(right_y_axis, list):
             ax2 = ax.twinx()
-            sns.lineplot(data=df_all, x=x_axis_column, y=right_y_axis, hue="__file__",
-                         ax=ax2, linewidth=1, linestyle=":", legend=False, palette=["red"])
-            ax2.set_ylabel(right_y_axis, fontsize=style['label_size'], color='red')
+            for ry_field in right_y_axis:
+                if ry_field in df_all.columns:
+                    for file_name in data_dict.keys():
+                        df_file = df_all[df_all["__file__"] == file_name]
+                        if ry_field in df_file.columns:
+                            ax2.plot(
+                                df_file[x_axis_column],
+                                df_file[ry_field],
+                                label=f"{file_name}: {ry_field}",
+                                linestyle='--',
+                                linewidth=style['line_width'],
+                                color='firebrick',
+                                alpha=0.5
+                            )
+            ax2.set_ylabel(" / ".join(right_y_axis), fontsize=style['label_size'], color='firebrick')
 
+        if idx == 0:
+            ax.legend(fontsize=8, loc='best')
+
+    # 清除多余 subplot
     for j in range(len(selected_fields), len(axes)):
         fig.delaxes(axes[j])
+
     fig.tight_layout()
 
 
@@ -139,22 +164,26 @@ def plot_with_plotly(fig, data_dict, selected_fields, x_axis_column, n_cols, rig
                     row=row, col=col, secondary_y=False
                 )
 
-            if right_y_axis and right_y_axis in df.columns:
-                fig_plotly.add_trace(
-                    go.Scatter(
-                        x=df[x_axis_column],
-                        y=df[right_y_axis],
-                        mode='lines',
-                        name=f"{file_name}: {right_y_axis}",
-                        line=dict(color='red', dash='dot', width=style['line_width']),
-                        opacity=style['alpha']
-                    ),
-                    row=row, col=col, secondary_y=True
-                )
+        # 右轴多字段绘制
+        if right_y_axis and isinstance(right_y_axis, list):
+            for ry_field in right_y_axis:
+                for file_name, df in data_dict.items():
+                    if ry_field in df.columns:
+                        fig_plotly.add_trace(
+                            go.Scatter(
+                                x=df[x_axis_column],
+                                y=df[ry_field],
+                                mode='lines',
+                                name=f"{file_name}: {ry_field}",
+                                line=dict(color='firebrick', dash='dot', width=style['line_width']),
+                                opacity=style['alpha']
+                            ),
+                            row=row, col=col, secondary_y=True
+                        )
 
         fig_plotly.update_yaxes(title_text=field, row=row, col=col, secondary_y=False)
         if right_y_axis:
-            fig_plotly.update_yaxes(title_text=right_y_axis, row=row, col=col, secondary_y=True)
+            fig_plotly.update_yaxes(title_text=" / ".join(right_y_axis), row=row, col=col, secondary_y=True)
         fig_plotly.update_xaxes(title_text=x_axis_column, row=row, col=col)
 
     fig_plotly.update_layout(

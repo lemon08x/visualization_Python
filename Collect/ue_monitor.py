@@ -18,7 +18,9 @@ CSV_HEADER = [
 ]
 
 class UEMonitor:
-    def __init__(self, ws_url, output_file, time_limit=None, ssh_host=None, ssh_user=None, ssh_pass=None, nr_lte_switch=False, elevator_switch=False, noise_switch=False):
+    # def __init__(self, ws_url, output_file, time_limit=None, ssh_host=None, ssh_user=None, ssh_pass=None, nr_lte_switch=False, elevator_switch=False, noise_switch=False):
+    def __init__(self, ws_url, output_file, time_limit=None, ssh_host=None, ssh_user=None, ssh_pass=None,
+                 nr_lte_switch=False, elevator_switch=False, noise_switch=False, heatmap_test=False):
         self.ws_url = ws_url
         self.output_file = output_file
         self.time_limit = time_limit
@@ -36,6 +38,7 @@ class UEMonitor:
         self.nr_lte_switch = nr_lte_switch
         self.elevator_switch = elevator_switch
         self.noise_switch = noise_switch
+        self.heatmap_test = heatmap_test  # 新增测试标志
         self.gain_4g = 0
         self.gain_5g = 0
         self.noise = None
@@ -70,6 +73,16 @@ class UEMonitor:
             self.noise_min = -50
             if self.time_limit is None:
                 self.time_limit = self.total_noise_time
+        elif self.heatmap_test:
+            # 新增：热力图测试的网格参数
+            self.noise_grid = [-50, -40, -30, -20, -10, 0]  # Y轴：噪声等级
+            self.gain_grid = [90, 80, 70, 60, 50, 40, 30, 20]  # X轴：信号增益等级
+            self.dwell_time = 10  # 每个(增益,噪声)点的驻留测量时间（秒）
+
+            # 计算总测试时间
+            self.total_test_time = len(self.noise_grid) * len(self.gain_grid) * self.dwell_time
+            if self.time_limit is None:
+                self.time_limit = self.total_test_time
 
     def on_message(self, ws, message):
         try:
@@ -354,6 +367,44 @@ class UEMonitor:
             
             time.sleep(1)
 
+    def _heatmap_test_loop(self):
+        """新增：步进-保持-测量模式，用于热力图数据采集"""
+        print("Heatmap data collection test started.")
+
+        # 外层循环：遍历噪声等级 (Y轴)
+        for noise_level in self.noise_grid:
+            if not self.running: break
+
+            # 设置当前噪声值
+            self.noise = noise_level
+            print(f"\n===== Setting Noise Level to: {self.noise} dB =====")
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                noise_msg = {"noise_level": self.noise, "channel": 2, "message": "noise_level",
+                             "message_id": "heatmap_noise"}
+                self.ws.send(json.dumps(noise_msg))
+
+            # 内层循环：遍历信号增益等级 (X轴)
+            for gain_level in self.gain_grid:
+                if not self.running: break
+
+                # 设置当前的4G和5G增益
+                self.gain_4g = gain_level
+                self.gain_5g = gain_level
+                print(f"--- Testing point (Gain: {gain_level}, Noise: {noise_level}) for {self.dwell_time}s ---")
+
+                if self.ws and self.ws.sock and self.ws.sock.connected:
+                    gain_msg = {
+                        "message": "rf_gain", "rx_gain": [self.gain_4g, self.gain_5g, self.gain_5g],
+                        "tx_gain": [self.gain_4g, self.gain_5g, self.gain_5g], "message_id": "heatmap_gain"
+                    }
+                    self.ws.send(json.dumps(gain_msg))
+
+                # 在此(增益,噪声)点上驻留，让主循环持续抓取数据
+                time.sleep(self.dwell_time)
+
+        print("Heatmap data collection finished.")
+        self.stop_monitoring()
+
     def stop_iperf(self):
         if self.ssh_channel:
             try:
@@ -394,6 +445,9 @@ class UEMonitor:
             switch_thread.start()
         elif self.noise_switch:
             switch_thread = threading.Thread(target=self._noise_switch_loop, daemon=True)
+            switch_thread.start()
+        elif self.heatmap_test:
+            switch_thread = threading.Thread(target=self._heatmap_test_loop, daemon=True)
             switch_thread.start()
 
         try:
@@ -456,14 +510,16 @@ def parse_arguments():
                         help='Enable elevator simulation with dynamic gain control.')
     parser.add_argument('--noise-switch', action='store_true',
                         help='Enable noise switch test.')
+    parser.add_argument('--heatmap-test', action='store_true',
+                        help='Enable heatmap data collection test.')
     return parser.parse_args()
 
 def main():
     args = parse_arguments()
     monitor = UEMonitor(args.ws_url, args.output_file, args.time_limit,
                         args.ssh_host, args.ssh_user, args.ssh_pass,
-                        args.nr_lte_switch, args.elevator_switch, args.noise_switch)
-    
+                        args.nr_lte_switch, args.elevator_switch, args.noise_switch, args.heatmap_test)
+
     print("Starting UE monitoring...")
     if args.time_limit:
         print(f"Monitoring will automatically stop after {args.time_limit} seconds.")

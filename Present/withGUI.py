@@ -79,12 +79,20 @@ class MultiFilePlotterApp:
         self.x_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
 
         # 添加右 Y 轴选择下拉框（默认空）
-        tk.Label(control_frame, text="右侧 Y 轴列（可选）：", font=('Arial', 12)).pack(pady=10)
-        self.right_y_axis_var = tk.StringVar(value="")  # 默认不选
-        self.right_y_axis_selector = ttk.Combobox(control_frame, textvariable=self.right_y_axis_var, state="readonly")
-        self.right_y_axis_selector['values'] = [""]  # 空表示不启用右轴
-        self.right_y_axis_selector.pack()
-        self.right_y_axis_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
+        tk.Label(control_frame, text="右侧 Y 轴字段（多选）：", font=('Arial', 12)).pack(pady=10)
+
+        right_y_frame = tk.Frame(control_frame)
+        right_y_frame.pack(fill=tk.X, padx=5)
+
+        self.right_y_axis_listbox = tk.Listbox(right_y_frame, selectmode=tk.MULTIPLE, height=6, exportselection=False)
+        scrollbar = tk.Scrollbar(right_y_frame, orient=tk.VERTICAL, command=self.right_y_axis_listbox.yview)
+        self.right_y_axis_listbox.config(yscrollcommand=scrollbar.set)
+
+        self.right_y_axis_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 绑定字段选择事件，自动刷新图表
+        self.right_y_axis_listbox.bind("<<ListboxSelect>>", lambda e: self.update_plot())
 
         # 添加导出和复制按钮的水平布局
         button_frame = tk.Frame(control_frame)
@@ -119,10 +127,10 @@ class MultiFilePlotterApp:
             if self.x_axis_var.get() not in sample_df.columns:
                 self.x_axis_var.set("timestamp")  # 默认值
 
-            # 更新右 Y 轴字段下拉框
-            self.right_y_axis_selector['values'] = [""] + sorted(self.available_fields)
-            if self.right_y_axis_var.get() not in self.right_y_axis_selector['values']:
-                self.right_y_axis_var.set("")
+            # 更新右 Y 轴字段 Listbox
+            self.right_y_axis_listbox.delete(0, tk.END)
+            for col in sorted(self.available_fields):
+                self.right_y_axis_listbox.insert(tk.END, col)
 
         self.update_checkboxes()
         self.update_plot()
@@ -248,19 +256,20 @@ class MultiFilePlotterApp:
         x_axis_column = self.x_axis_var.get()
         backend = self.plot_backend_var.get()
 
-        right_y_axis = self.right_y_axis_var.get() or None  # 为空字符串则不启用
+        # 获取右侧 Y 轴字段（多选）
+        selected_indices = self.right_y_axis_listbox.curselection()
+        right_y_fields = [self.right_y_axis_listbox.get(i) for i in selected_indices]
 
         try:
             if backend == "matplotlib":
-                # plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols)
-                # plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
-                plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
+                plot_with_matplotlib(self.fig, self.all_data, selected, x_axis_column, n_cols,
+                                     right_y_axis=right_y_fields, style=self.plot_style)
             elif backend == "seaborn":
-                # plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
-                plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
+                plot_with_seaborn(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis=right_y_fields,
+                                  style=self.plot_style)
             elif backend == "plotly":
-                # plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis)
-                plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis, style=self.plot_style)
+                plot_with_plotly(self.fig, self.all_data, selected, x_axis_column, n_cols, right_y_axis=right_y_fields,
+                                 style=self.plot_style)
                 return
             else:
                 messagebox.showerror("错误", f"未知绘图方式：{backend}")
