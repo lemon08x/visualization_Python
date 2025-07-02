@@ -191,10 +191,24 @@ class MultiFilePlotterApp:
             widget.destroy()
 
         self.selected_fields.clear()
+
+        fixed_width = 220
+
+        canvas = tk.Canvas(self.checkbuttons_frame, width=fixed_width)
+        scrollbar = tk.Scrollbar(self.checkbuttons_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas)
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.Y, expand=False)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         for col in sorted(self.available_fields):
             var = tk.IntVar()
-            chk = tk.Checkbutton(self.checkbuttons_frame, text=col, variable=var, command=self.update_plot)
-            chk.pack(anchor='w')
+            chk = tk.Checkbutton(scrollable_frame, text=col, variable=var, command=self.update_plot,
+                                 anchor='w', width=25)
+            chk.pack(anchor='w', pady=1)
             self.selected_fields[col] = var
 
     def open_style_config(self):
