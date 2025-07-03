@@ -74,13 +74,18 @@ class UEMonitor:
             if self.time_limit is None:
                 self.time_limit = self.total_noise_time
         elif self.heatmap_test:
-            # 新增：热力图测试的网格参数
             self.noise_grid = [-50, -40, -30, -20, -10, 0]  # Y轴：噪声等级
             self.gain_grid = [90, 80, 70, 60, 50, 40, 30, 20]  # X轴：信号增益等级
             self.dwell_time = 10  # 每个(增益,噪声)点的驻留测量时间（秒）
 
+            # 新增：用于处理断网重连的参数
+            self.min_throughput_mbps = 1.0  # 定义"断网"的最小吞吐量阈值 (Mbps)
+            self.max_retries = 2  # 每个测试点的最大重试次数
+            self.tx_max_gain = 80  # 已知可以建连的最高增益 [cite: 1]
+
             # 计算总测试时间
             self.total_test_time = len(self.noise_grid) * len(self.gain_grid) * self.dwell_time
+
             if self.time_limit is None:
                 self.time_limit = self.total_test_time
 
@@ -368,42 +373,108 @@ class UEMonitor:
             time.sleep(1)
 
     def _heatmap_test_loop(self):
-        """新增：步进-保持-测量模式，用于热力图数据采集"""
-        print("Heatmap data collection test started.")
+        """步进-保持-测量模式，用于热力图数据采集，增加断网重连逻辑"""
+        print("Heatmap data collection test started with disconnection handling.")
 
-        # 外层循环：遍历噪声等级 (Y轴)
-        for noise_level in self.noise_grid:
+        # 外层循环：遍历信号增益 (X轴)
+        for gain_level in self.gain_grid:
             if not self.running: break
 
-            # 设置当前噪声值
-            self.noise = noise_level
-            print(f"\n===== Setting Noise Level to: {self.noise} dB =====")
-            if self.ws and self.ws.sock and self.ws.sock.connected:
-                noise_msg = {"noise_level": self.noise, "channel": 2, "message": "noise_level",
-                             "message_id": "heatmap_noise"}
-                self.ws.send(json.dumps(noise_msg))
-
-            # 内层循环：遍历信号增益等级 (X轴)
-            for gain_level in self.gain_grid:
+            # 内层循环：遍历噪声等级 (Y轴)
+            for noise_level in self.noise_grid:
                 if not self.running: break
 
-                # 设置当前的4G和5G增益
-                self.gain_4g = gain_level
-                self.gain_5g = gain_level
-                print(f"--- Testing point (Gain: {gain_level}, Noise: {noise_level}) for {self.dwell_time}s ---")
+                retries = self.max_retries
+                successful_measurement = False
 
-                if self.ws and self.ws.sock and self.ws.sock.connected:
-                    gain_msg = {
-                        "message": "rf_gain", "rx_gain": [self.gain_4g, self.gain_5g, self.gain_5g],
-                        "tx_gain": [self.gain_4g, self.gain_5g, self.gain_5g], "message_id": "heatmap_gain"
-                    }
-                    self.ws.send(json.dumps(gain_msg))
+                while not successful_measurement and retries > 0:
+                    print(
+                        f"--- Testing point (Gain: {gain_level}, Noise: {noise_level}) for {self.dwell_time}s. Tries left: {retries} ---")
 
-                # 在此(增益,噪声)点上驻留，让主循环持续抓取数据
-                time.sleep(self.dwell_time)
+                    # 设置当前的增益和噪声
+                    self._send_gain(gain_level)
+                    self._send_noise(noise_level)
 
-        print("Heatmap data collection finished.")
+                    self.gain_4g = gain_level
+                    self.gain_5g = gain_level
+                    self.noise = noise_level
+
+                    # 记录开始时间戳，用于后续数据筛选
+                    start_measurement_time = datetime.now()
+                    time.sleep(self.dwell_time)
+
+                    # 分析在 dwell_time 期间采集的数据
+                    df = pd.DataFrame(self.data)
+                    if df.empty:
+                        mean_throughput = 0
+                    else:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        recent_data = df[df['timestamp'] > start_measurement_time]
+                        mean_throughput = recent_data['avg_rate_mbps'].mean() if not recent_data.empty else 0
+
+                    # 判断测量是否成功
+                    if mean_throughput > self.min_throughput_mbps:
+                        print(
+                            f"\033[32mPASSED: Mean throughput = {mean_throughput:.2f} Mbps > {self.min_throughput_mbps} Mbps\033[0m")
+                        successful_measurement = True
+                    else:
+                        # 测量失败，执行恢复逻辑
+                        retries -= 1
+                        print(
+                            f"\033[31mFAILED: Mean throughput = {mean_throughput:.2f} Mbps. Starting recovery procedure...\033[0m")
+
+                        # 如果还有重试机会，则执行恢复
+                        if retries > 0:
+                            # 1. 停止 iperf
+                            self.stop_iperf()
+                            time.sleep(15)
+
+                            # 2. 重置到已知良好状态 (最高增益, 0噪声)
+                            print(f"Resetting to safe state (Gain: {self.tx_max_gain}, Noise: 0) and wait 180s.")
+                            self._send_noise(0)
+                            self._send_gain(self.tx_max_gain)
+                            time.sleep(180)
+
+                            # 3. 逐步将增益恢复到测试值
+                            print(f"Ramping gain down from {self.tx_max_gain} to {gain_level}.")
+                            for g in range(self.tx_max_gain, gain_level - 1, -5):
+                                self._send_gain(g)
+                                time.sleep(5)
+                            self._send_gain(gain_level)  # 确保最终值为目标值
+
+                            # 4. 恢复噪声，重启iperf，并等待下一次测量
+                            print(f"Restoring noise to {noise_level} and restarting iperf.")
+                            self._send_noise(noise_level)[cite: 15]
+                            self.start_iperf()
+                            time.sleep(45)  # 等待网络稳定 [cite: 2]
+
+                # 如果所有重试都失败，则跳出噪声循环，进行下一个增益等级的测试
+                if not successful_measurement:
+                    print(f"--- All retries failed for Gain={gain_level}. Skipping remaining noise levels. ---")
+                    break
+
+        print("\nHeatmap data collection finished.")
         self.stop_monitoring()
+
+    def _send_gain(self, gain_level):
+        """发送射频增益设置"""
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            gain_msg = {
+                "message": "rf_gain",
+                "rx_gain": [gain_level, gain_level, gain_level],
+                "tx_gain": [gain_level, gain_level, gain_level],
+                "message_id": "heatmap_gain_update"
+            }
+            self.ws.send(json.dumps(gain_msg))
+
+    def _send_noise(self, noise_level):
+        """发送噪声等级设置"""
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            noise_msg = {
+                "noise_level": noise_level, "channel": 2, "message": "noise_level",
+                "message_id": "heatmap_noise_update"
+            }
+            self.ws.send(json.dumps(noise_msg))
 
     def stop_iperf(self):
         if self.ssh_channel:
