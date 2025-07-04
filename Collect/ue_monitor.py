@@ -74,8 +74,10 @@ class UEMonitor:
             if self.time_limit is None:
                 self.time_limit = self.total_noise_time
         elif self.heatmap_test:
-            self.noise_grid = [-50, -40, -30, -20, -10, 0]  # Y轴：噪声等级
-            self.gain_grid = [90, 80, 70, 60, 50, 40, 30, 20]  # X轴：信号增益等级
+            self.gain_grid = [
+                (45, 90), (45, 82), (45, 75), (40, 67), (40, 60),
+                (40, 52), (35, 45), (35, 37), (30, 30), (22, 22), (15, 15)
+            ]
             self.dwell_time = 10  # 每个(增益,噪声)点的驻留测量时间（秒）
 
             # 新增：用于处理断网重连的参数
@@ -373,11 +375,11 @@ class UEMonitor:
             time.sleep(1)
 
     def _heatmap_test_loop(self):
-        """步进-保持-测量模式，用于热力图数据采集，增加断网重连逻辑"""
+        """步进-保持-测量模式，支持独立的4G/5G增益和恢复逻辑"""
         print("Heatmap data collection test started with disconnection handling.")
 
-        # 外层循环：遍历信号增益 (X轴)
-        for gain_level in self.gain_grid:
+        # 外层循环：遍历(gain_4g, gain_5g)坐标点 (X轴)
+        for gain_4g, gain_5g in self.gain_grid:
             if not self.running: break
 
             # 内层循环：遍历噪声等级 (Y轴)
@@ -389,17 +391,17 @@ class UEMonitor:
 
                 while not successful_measurement and retries > 0:
                     print(
-                        f"--- Testing point (Gain: {gain_level}, Noise: {noise_level}) for {self.dwell_time}s. Tries left: {retries} ---")
+                        f"--- Testing point (Gain 4G: {gain_4g}, 5G: {gain_5g}, Noise: {noise_level}) for {self.dwell_time}s. Tries left: {retries} ---")
 
                     # 设置当前的增益和噪声
-                    self._send_gain(gain_level)
+                    self._send_gain(gain_4g, gain_5g)
                     self._send_noise(noise_level)
 
-                    self.gain_4g = gain_level
-                    self.gain_5g = gain_level
+                    self.gain_4g = gain_4g
+                    self.gain_5g = gain_5g
                     self.noise = noise_level
 
-                    # 记录开始时间戳，用于后续数据筛选
+                    # 等待并采集数据
                     start_measurement_time = datetime.now()
                     time.sleep(self.dwell_time)
 
@@ -414,55 +416,69 @@ class UEMonitor:
 
                     # 判断测量是否成功
                     if mean_throughput > self.min_throughput_mbps:
-                        print(
-                            f"\033[32mPASSED: Mean throughput = {mean_throughput:.2f} Mbps > {self.min_throughput_mbps} Mbps\033[0m")
+                        print(f"\033[32mPASSED: Mean throughput = {mean_throughput:.2f} Mbps\033[0m")
                         successful_measurement = True
                     else:
-                        # 测量失败，执行恢复逻辑
                         retries -= 1
                         print(
                             f"\033[31mFAILED: Mean throughput = {mean_throughput:.2f} Mbps. Starting recovery procedure...\033[0m")
 
-                        # 如果还有重试机会，则执行恢复
                         if retries > 0:
-                            # 1. 停止 iperf
                             self.stop_iperf()
                             time.sleep(15)
 
-                            # 2. 重置到已知良好状态 (最高增益, 0噪声)
                             print(f"Resetting to safe state (Gain: {self.tx_max_gain}, Noise: 0) and wait 180s.")
                             self._send_noise(0)
-                            self._send_gain(self.tx_max_gain)
+                            self._send_gain(self.tx_max_gain, self.tx_max_gain)
                             time.sleep(180)
 
-                            # 3. 逐步将增益恢复到测试值
-                            print(f"Ramping gain down from {self.tx_max_gain} to {gain_level}.")
-                            for g in range(self.tx_max_gain, gain_level - 1, -5):
-                                self._send_gain(g)
-                                time.sleep(5)
-                            self._send_gain(gain_level)  # 确保最终值为目标值
+                            # 【调用新的恢复函数】
+                            self._ramp_down_gain(gain_4g, gain_5g)
 
-                            # 4. 恢复噪声，重启iperf，并等待下一次测量
                             print(f"Restoring noise to {noise_level} and restarting iperf.")
-                            self._send_noise(noise_level)[cite: 15]
+                            self._send_noise(noise_level)
                             self.start_iperf()
-                            time.sleep(45)  # 等待网络稳定 [cite: 2]
+                            time.sleep(45)  # 等待网络稳定
 
-                # 如果所有重试都失败，则跳出噪声循环，进行下一个增益等级的测试
                 if not successful_measurement:
-                    print(f"--- All retries failed for Gain={gain_level}. Skipping remaining noise levels. ---")
+                    print(
+                        f"--- All retries failed for Gain pair ({gain_4g}, {gain_5g}). Skipping remaining noise levels for this pair. ---")
                     break
 
         print("\nHeatmap data collection finished.")
         self.stop_monitoring()
 
-    def _send_gain(self, gain_level):
-        """发送射频增益设置"""
+    def _ramp_down_gain(self, target_gain_4g, target_gain_5g):
+        """【新增】一个辅助函数，用于将增益从最大值平滑地降低到各自的目标值"""
+        print(f"Ramping gain down from {self.tx_max_gain} towards (4G: {target_gain_4g}, 5G: {target_gain_5g}).")
+
+        # 从最大增益开始，以5为步长向下递减
+        for g in range(self.tx_max_gain, min(target_gain_4g, target_gain_5g) - 1, -5):
+            if not self.running: break
+
+            # 只要当前斜坡值g高于目标值，就使用g，否则使用目标值
+            current_4g = max(g, target_gain_4g)
+            current_5g = max(g, target_gain_5g)
+
+            self._send_gain(current_4g, current_5g)
+            time.sleep(5)
+
+            # 如果两个增益都已达到其目标值，则可以提前结束斜坡
+            if current_4g == target_gain_4g and current_5g == target_gain_5g:
+                break
+
+        # 最后再发送一次精确的目标值，以防步长问题导致误差
+        self._send_gain(target_gain_4g, target_gain_5g)
+        print("Gain ramping finished.")
+
+    def _send_gain(self, gain_4g, gain_5g):
+        """发送独立的4G和5G射频增益设置"""
         if self.ws and self.ws.sock and self.ws.sock.connected:
             gain_msg = {
                 "message": "rf_gain",
-                "rx_gain": [gain_level, gain_level, gain_level],
-                "tx_gain": [gain_level, gain_level, gain_level],
+                # 按 [4G, 5G, 5G] 的格式发送
+                "rx_gain": [gain_4g, gain_5g, gain_5g],
+                "tx_gain": [gain_4g, gain_5g, gain_5g],
                 "message_id": "heatmap_gain_update"
             }
             self.ws.send(json.dumps(gain_msg))
