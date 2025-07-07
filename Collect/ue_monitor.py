@@ -74,11 +74,13 @@ class UEMonitor:
             if self.time_limit is None:
                 self.time_limit = self.total_noise_time
         elif self.heatmap_test:
+            # 重新设计的noise_grid和gain_gridimage.png
+            self.noise_grid = [-120, -100, -90, -85, -80, -72, -64, -53, -42, -33, -24, -18, -10]
             self.gain_grid = [
-                (45, 90), (45, 82), (45, 75), (40, 67), (40, 60),
-                (40, 52), (35, 45), (35, 37), (30, 30), (22, 22), (15, 15)
+                (0, 90), (0, 85), (0, 78), (0, 72), (0, 68),
+                (0, 64), (0, 58), (0, 50), (0, 46), (0, 42)
             ]
-            self.dwell_time = 10  # 每个(增益,噪声)点的驻留测量时间（秒）
+            self.dwell = 15  # 每个(增益,噪声)点的驻留测量时间（秒）
 
             # 新增：用于处理断网重连的参数
             self.min_throughput_mbps = 1.0  # 定义"断网"的最小吞吐量阈值 (Mbps)
@@ -86,10 +88,7 @@ class UEMonitor:
             self.tx_max_gain = 80  # 已知可以建连的最高增益 [cite: 1]
 
             # 计算总测试时间
-            self.total_test_time = len(self.noise_grid) * len(self.gain_grid) * self.dwell_time
-
-            if self.time_limit is None:
-                self.time_limit = self.total_test_time
+ 
 
     def on_message(self, ws, message):
         try:
@@ -152,6 +151,7 @@ class UEMonitor:
             'gain_5g': self.gain_5g,
             'noise': self.noise,
         }
+        print(f"NR record: {record}")
         self.data.append(record)
         print(f"Logged NR UE[{ue_id}] data at {timestamp.strftime('%H:%M:%S')}")
 
@@ -194,6 +194,7 @@ class UEMonitor:
             'gain_5g': self.gain_5g,
             'noise': self.noise,
         }
+        print(f"LTE record: {record}")
         self.data.append(record)
         print(f"Logged LTE UE[{ue_id}] data at {timestamp.strftime('%H:%M:%S')}")
         
@@ -238,7 +239,7 @@ class UEMonitor:
             self.ssh_client.connect(self.ssh_host, username=self.ssh_user, password=self.ssh_pass, timeout=10)
 
             print("Starting iperf...")
-            iperf_command = "iperf -c 192.168.2.2 -u -b 230m -t 1000 -i 1\n"
+            iperf_command = "iperf -c 192.168.2.2 -u -b 230m -t 1000000 -i 1\n"
 
             self.ssh_channel = self.ssh_client.invoke_shell()
             self.ssh_channel.send(iperf_command)
@@ -378,20 +379,24 @@ class UEMonitor:
         """步进-保持-测量模式，支持独立的4G/5G增益和恢复逻辑"""
         print("Heatmap data collection test started with disconnection handling.")
 
+        # 新增：用于提前终止测试的标志
+        abort_all = False
+
         # 外层循环：遍历(gain_4g, gain_5g)坐标点 (X轴)
-        for gain_4g, gain_5g in self.gain_grid:
-            if not self.running: break
+        for gain_idx, (gain_4g, gain_5g) in enumerate(self.gain_grid):
+            if not self.running or abort_all: break
 
             # 内层循环：遍历噪声等级 (Y轴)
-            for noise_level in self.noise_grid:
-                if not self.running: break
+            for noise_idx, noise_level in enumerate(self.noise_grid):
+                if not self.running or abort_all: break
 
+                is_first_point = (gain_idx == 0 and noise_idx == 0)
                 retries = self.max_retries
                 successful_measurement = False
 
                 while not successful_measurement and retries > 0:
                     print(
-                        f"--- Testing point (Gain 4G: {gain_4g}, 5G: {gain_5g}, Noise: {noise_level}) for {self.dwell_time}s. Tries left: {retries} ---")
+                        f"--- Testing point (Gain 4G: {gain_4g}, 5G: {gain_5g}, Noise: {noise_level}) for {self.dwell}s. Tries left: {retries} ---")
 
                     # 设置当前的增益和噪声
                     self._send_gain(gain_4g, gain_5g)
@@ -402,17 +407,20 @@ class UEMonitor:
                     self.noise = noise_level
 
                     # 等待并采集数据
-                    start_measurement_time = datetime.now()
-                    time.sleep(self.dwell_time)
+                    time.sleep(5)
+                    # 采集 dwell 秒数据
+                    time.sleep(self.dwell)
 
-                    # 分析在 dwell_time 期间采集的数据
-                    df = pd.DataFrame(self.data)
-                    if df.empty:
-                        mean_throughput = 0
+                    # 直接用 self.data 的最后 dwell 条数据计算均值
+                    if len(self.data) >= self.dwell:
+                        recent_data = self.data[-self.dwell:]
                     else:
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
-                        recent_data = df[df['timestamp'] > start_measurement_time]
-                        mean_throughput = recent_data['avg_rate_mbps'].mean() if not recent_data.empty else 0
+                        recent_data = self.data[:]
+                    if recent_data:
+                        avg_rates = [item.get('avg_rate_mbps', 0) for item in recent_data if isinstance(item, dict)]
+                        mean_throughput = sum(avg_rates) / len(avg_rates) if avg_rates else 0
+                    else:
+                        mean_throughput = 0
 
                     # 判断测量是否成功
                     if mean_throughput > self.min_throughput_mbps:
@@ -425,20 +433,24 @@ class UEMonitor:
 
                         if retries > 0:
                             self.stop_iperf()
-                            time.sleep(15)
 
-                            print(f"Resetting to safe state (Gain: {self.tx_max_gain}, Noise: 0) and wait 180s.")
-                            self._send_noise(0)
+                            print(f"Resetting to safe state (Gain: {self.tx_max_gain}, Noise: 0) and wait 10s.")
+                            self._send_noise(-120)
                             self._send_gain(self.tx_max_gain, self.tx_max_gain)
-                            time.sleep(180)
+                            time.sleep(10)
 
-                            # 【调用新的恢复函数】
                             self._ramp_down_gain(gain_4g, gain_5g)
 
                             print(f"Restoring noise to {noise_level} and restarting iperf.")
                             self._send_noise(noise_level)
                             self.start_iperf()
-                            time.sleep(45)  # 等待网络稳定
+                            time.sleep(5)  # 等待网络稳定
+
+                # 新增逻辑：如果在最低噪声下（idx==0）且所有重试都失败，终止所有后续测试
+                if noise_idx == 0 and not successful_measurement:
+                    print(f"\033[31mABORT: Gain (4G: {gain_4g}, 5G: {gain_5g}) at lowest noise has zero throughput. Stopping all further tests.\033[0m")
+                    abort_all = True
+                    break
 
                 if not successful_measurement:
                     print(
@@ -486,6 +498,7 @@ class UEMonitor:
     def _send_noise(self, noise_level):
         """发送噪声等级设置"""
         if self.ws and self.ws.sock and self.ws.sock.connected:
+            print(f"[DEBUG] Set noise to {noise_level}")
             noise_msg = {
                 "noise_level": noise_level, "channel": 2, "message": "noise_level",
                 "message_id": "heatmap_noise_update"
@@ -583,7 +596,7 @@ class UEMonitor:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Monitor 4G/5G UE parameters via WebSocket and log to CSV.')
-    parser.add_argument('--ws-url', type=str, default="ws://127.0.0.1:9001/",
+    parser.add_argument('--ws-url', type=str, default="ws://192.168.50.66:9001/",
                       help='WebSocket server URL (default: ws://127.0.0.1:9001/)')
     parser.add_argument('-t', '--time-limit', type=int, help='Time limit in seconds for monitoring.')
     parser.add_argument('-o', '--output-file', type=str, default='ue_monitor_log.csv',
