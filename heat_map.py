@@ -4,6 +4,7 @@ import argparse
 import sys
 import os
 import plotly.graph_objs as go
+from typing import Optional
 
 # ---- 全局常量设置 ----
 DEFAULT_METRIC = 'avg_rate_mbps'
@@ -31,11 +32,32 @@ def create_grid(df, x_col='gain_5g', y_col='noise', resolution=400):
     return (x_min, x_max, y_min, y_max), grid_x, grid_y
 
 def plot_raw_heatmap(df, metric, output_file=None):
+    z = df[metric]
+    z_min = z.min()
+    z_max = z.max()
+
+    custom_colorscale = [
+        [0.0, "#0c0180"],
+        [0.1, "#1101bc"],
+        [0.2, "#1a2dff"],
+        [0.3, "#247ef2"],
+        [0.4, "#21d9cc"],
+        [0.5, "#2ad921"],
+        [0.6, "#abd921"],
+        [0.7, "#f2cc24"],
+        [0.8, "#f27324"],
+        [0.9, "#e52222"],
+        [1.0, "#e52222"]
+    ]
+    # 归一化z
+    normed_z = (z - z_min) / (z_max - z_min) if z_max > z_min else z*0
     fig = go.Figure(data=go.Heatmap(
         x=df['gain_5g'],
         y=df['noise'],
-        z=df[metric],
-        colorscale='Viridis',
+        z=z,
+        zmin=z_min,
+        zmax=z_max,
+        colorscale="viridis",
         colorbar=dict(title=f'{metric.replace("_", " ").title()}')
     ))
     fig.update_layout(
@@ -61,33 +83,58 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
     df['noise_bin'] = (df['noise'] / noise_step).round() * noise_step
 
     # 生成规则网格（所有数据）
-    pivot = df.pivot_table(index='noise_bin', columns='gain_bin', values=metric, aggfunc='mean', fill_value=0)
+    pivot = df.pivot_table(index='noise_bin', columns='gain_bin', values=metric, aggfunc='mean')
+
     z = pivot.values
     x = pivot.columns.values
     y = pivot.index.values
 
-    # 自动设置等高线间隔
+    # 自动设置等高线分级，使z_max一端的区间宽度为其它的两倍
     z_min = np.nanmin(z)
     z_max = np.nanmax(z)
-    n_levels = 12
-    if z_max > z_min:
-        interval = (z_max - z_min) / n_levels
-    else:
-        interval = 1
-    if interval > 1:
-        interval = 10 ** np.floor(np.log10(interval))
-    if interval > 1 and (z_max - z_min) / interval < 6:
-        interval = interval / 2
+    n_levels = 8  # 总区间数
 
+    col_sum = np.sum(z, axis=0)
+    # 计算列的有效性
+    valid_cols = col_sum != 0
+
+    # 严格筛选有效数据
+    x = pivot.columns[valid_cols]
+    z = z[:, valid_cols]
     x_min, x_max = x.min(), x.max()
+    print(f"[DEBUG] x_min: {x_min}, x_max: {x_max}")
     y_min, y_max = y.min(), y.max()
 
-    # 找到最小有效tx_gain
-    col_sum = np.sum(z, axis=0)
-    valid_x = x[col_sum != 0]
-    min_tx_gain = valid_x.min() if len(valid_x) > 0 else None
+    # 找到最小z值的位置
+    min_z_idx = np.unravel_index(np.argmin(z, axis=None), z.shape)
+    min_z_x = x[min_z_idx[1]]
+    min_z_y = y[min_z_idx[0]]
+    min_z_val = z[min_z_idx]
 
-    # 画contour主图
+    # Viridis 原始色带
+    custom_colorscale = [
+        [0.0, "#0c0180"],
+        [0.1, "#1101bc"],
+        [0.2, "#1a2dff"],
+        [0.3, "#247ef2"],
+        [0.4, "#21d9cc"],
+        [0.5, "#2ad921"],
+        [0.6, "#abd921"],
+        [0.7, "#f2cc24"],
+        [0.8, "#f27324"],
+        [0.9, "#e52222"],
+        [1.0, "#e52222"]
+    ]
+
+    # # 构造新的 colorscale: 最小值绿色，最大值红色，其余用 Viridis
+    # custom_colorscale = [
+    #     [0.0, "green"],
+    #     [0.0001, viridis[0][1]],
+    #     *viridis[1:-1],
+    #     [0.9999, viridis[-1][1]],
+    #     [1.0, "red"]
+    # ]
+
     fig = go.Figure(data=go.Contour(
         x=x,
         y=y,
@@ -95,62 +142,73 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
         contours=dict(
             start=float(z_min),
             end=float(z_max),
-            size=float(interval)
+            size=float((z_max - z_min) / n_levels),
+            coloring='fill',
+            showlines=False
         ),
-        colorscale='Viridis',
+        colorscale=custom_colorscale,
         showscale=True,
         name='All Data'
     ))
 
-    # 叠加LTE/NR点
-    df_lte = df[df['RAT'] == 'LTE']
-    df_nr = df[df['RAT'] == 'NR']
-    if not df_lte.empty:
-        fig.add_trace(go.Scatter(
-            x=df_lte['gain_5g'],
-            y=df_lte['noise'],
-            mode='markers',
-            marker=dict(color='red', symbol='x', size=8, line=dict(width=1, color='white')),
-            name='LTE'
-        ))
-    if not df_nr.empty:
-        fig.add_trace(go.Scatter(
-            x=df_nr['gain_5g'],
-            y=df_nr['noise'],
-            mode='markers',
-            marker=dict(color='blue', symbol='circle-open', size=8, line=dict(width=1, color='blue')),
-            name='NR'
-        ))
+    # # 叠加LTE/NR点
+    # df_lte = df[df['RAT'] == 'LTE']
+    # df_nr = df[df['RAT'] == 'NR']
+    # if not df_lte.empty:
+    #     fig.add_trace(go.Scatter(
+    #         x=df_lte['gain_5g'],
+    #         y=df_lte['noise'],
+    #         mode='markers',
+    #         marker=dict(color='red', symbol='x', size=8, line=dict(width=1, color='white')),
+    #         name='LTE'
+    #     ))
+    # if not df_nr.empty:
+    #     fig.add_trace(go.Scatter(
+    #         x=df_nr['gain_5g'],
+    #         y=df_nr['noise'],
+    #         mode='markers',
+    #         marker=dict(color='blue', symbol='circle-open', size=8, line=dict(width=1, color='blue')),
+    #         name='NR'
+    #     ))
 
     fig.update_layout(
-        xaxis=dict(title="tx_gain (db)", autorange='reversed', range=[x_max, x_min]),
+        xaxis=dict(title="tx_gain (db)", range=[x_max, x_min]),  # 直接设置倒序范围
         yaxis=dict(title="noise (db)", range=[y_min, y_max]),
         title=title,
         width=900, height=700
     )
-    # 添加注释
-    if min_tx_gain is not None:
-        fig.add_annotation(
-            x=min_tx_gain, y=y_min,
-            text=f"Min {min_tx_gain}",
-            font=dict(size=14, color="#FFF"),
-            arrowcolor="#FFF", ax=0
-        )
+    # 添加注释：标记最小z值
     fig.add_annotation(
-        x=x_min + (x_max-x_min)*0.1, y=y_max, text=title,
-        font=dict(size=14, color="#FFF"), showarrow=False
+        x=min_z_x, y=min_z_y,
+        text=f"Min z: {min_z_val:.2f}",
+        font=dict(size=16, color="#222"),  # 深色字体
+        showarrow=True,
+        arrowcolor="#222",  # 深色箭头
+        arrowhead=2,
+        ax=40, ay=-40,  # 箭头偏移
+        bgcolor="#fff",  # 白色背景
+        bordercolor="#222",
+        borderpad=4
     )
+    # fig.add_annotation(
+    #     x=x_min + (x_max-x_min)*0.1, y=y_max, text=title,
+    #     font=dict(size=14, color="#000"), showarrow=False
+    # )
     if output_file:
         fig.write_image(output_file)
         print(f"\n拟合等高线图已保存至: {output_file}")
     else:
         fig.show()
 
-def create_optimized_heatmap(input_file: str, output_file: str = None, metric: str = DEFAULT_METRIC):
+def create_optimized_heatmap(input_file: str, output_file: Optional[str] = None, metric: str = DEFAULT_METRIC):
     required_columns = ['gain_5g', 'noise', 'RAT', metric]
     df= validate_input_file(input_file, required_columns)
     if metric not in df.columns:
         metric = 'instant_rate_mbps'
+
+    # 只保留每组 (gain_5g, noise) 的最后10条数据
+    df = df.sort_index()  # 保证原始顺序
+    df = df.groupby(['gain_5g', 'noise'], as_index=False, group_keys=False).apply(lambda g: g.tail(10)).reset_index(drop=True)
 
     # 原始数据点热力图
     raw_out = None
