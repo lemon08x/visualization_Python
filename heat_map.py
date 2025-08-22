@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import argparse
 import sys
+import glob
 import os
 import plotly.graph_objs as go
 from typing import Optional
@@ -64,8 +65,8 @@ def plot_raw_heatmap(df, metric, output_file=None):
         title='原始数据点热力图',
         xaxis=dict(title='信号增益 (Gain)', autorange='reversed'),
         yaxis=dict(title='噪声等级 (Noise)'),
-        width=900,
-        height=700
+        width=2400,
+        height=1600
     )
     if output_file:
         fig.write_image(output_file)
@@ -92,7 +93,7 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
     # 自动设置等高线分级，使z_max一端的区间宽度为其它的两倍
     z_min = np.nanmin(z)
     z_max = np.nanmax(z)
-    n_levels = 8  # 总区间数
+    n_levels = 10  # 总区间数
 
     col_sum = np.sum(z, axis=0)
     # 计算列的有效性
@@ -111,7 +112,7 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
     min_z_y = y[min_z_idx[0]]
     min_z_val = z[min_z_idx]
 
-    # Viridis 原始色带
+    # 色带
     custom_colorscale = [
         [0.0, "#0c0180"],
         [0.1, "#1101bc"],
@@ -135,20 +136,38 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
     #     [1.0, "red"]
     # ]
 
+    # 色带比例点
+    scale_positions = [c[0] for c in custom_colorscale][:-1]
+
+    # 将比例映射到实际数值
+    tickvals = [10 + p * 200 for p in scale_positions]
+
+    # 格式化显示文本（可选：四舍五入，避免太长的小数）
+    ticktext = [f"{val:.0f}" for val in tickvals]
+
     fig = go.Figure(data=go.Contour(
         x=x,
         y=y,
         z=z,
         contours=dict(
-            start=float(z_min),
-            end=float(z_max),
-            size=float((z_max - z_min) / n_levels),
+            start=float(10),
+            end=float(210),
+            size=float((200) / n_levels),
             coloring='fill',
             showlines=False
         ),
         colorscale=custom_colorscale,
         showscale=True,
-        name='All Data'
+        name='All Data',
+        colorbar = dict(
+            title='',  # 如果色带也有标题，可以在这里设置
+            tickvals=tickvals,  # ✅ 强制 tick 在交界位置
+            ticktext=ticktext,  # ✅ 对应的文本
+            tickfont=dict(
+                family="Manrope Medium",
+                size=36
+            )
+        )
     ))
 
     # # 叠加LTE/NR点
@@ -172,30 +191,75 @@ def plot_fitted_heatmap(df, metric, output_file=None, title="拟合等高线图"
     #     ))
 
     fig.update_layout(
-        xaxis=dict(title="tx_gain (db)", range=[x_max, x_min]),  # 直接设置倒序范围
-        yaxis=dict(title="noise (db)", range=[y_min, y_max]),
-        title=title,
-        width=900, height=700
+        xaxis=dict(
+            title="TX_gain (dB)",
+            range=[x_max, x_min],  # 直接设置倒序范围
+            title_font=dict(size=44),  # <-- 设置X轴标题字体大小
+            tickfont=dict(size=36),  # <-- 设置X轴刻度字体大小
+            ticks = "outside",  # 将刻度线放在坐标轴外部
+            ticklen = 10,  # 设置刻度线长度为10像素，这会推远刻度值
+            tickwidth = 2  # 设置刻度线宽度
+        ),
+        yaxis=dict(
+            title="Noise Level",
+            range=[y_min, y_max],
+            title_font=dict(size=44),  # <-- 设置Y轴标题字体大小
+            tickfont=dict(size=36),  # <-- 设置Y轴刻度字体大小
+            ticks = "outside",  # 将刻度线放在坐标轴外部
+            ticklen = 10,  # 设置刻度线长度为10像素，这会推远刻度值
+            tickwidth = 2  # 设置刻度线宽度
+        ),
+        title=None,
+        font=dict(
+            family="Manrope Medium"
+        ),
+        width=2400,
+        height=1600
     )
+    # 添加注释：标记最小z值
+    # fig.add_annotation(
+    #     x=min_z_x, y=min_z_y,
+    #     text=f"Min z: {min_z_val:.2f}",
+    #     font=dict(size=16, color="#fff"),  # 深色字体
+    #     showarrow=True,
+    #     arrowcolor="#222",  # 深色箭头
+    #     arrowhead=2,
+    #     ax=40, ay=-40,  # 箭头偏移
+    #     bgcolor="#000",  # 白色背景
+    #     bordercolor="#222",
+    #     borderpad=4
+    # )
+    # 动态计算箭头偏移量，确保标记在图内
+    # x轴是反向的（从大到小），y轴是正向的
+    x_center = (x_min + x_max) / 2
+    y_center = (y_min + y_max) / 2
+
+    # 如果最小值的x坐标在图的右半边（因为x轴反向，值更小），箭头就指向左
+    ax_offset = -150 if min_z_x < x_center else 150
+    # 如果最小值的y坐标在图的上半边，箭头就指向下
+    ay_offset = 150 if min_z_y > y_center else -150
+
     # 添加注释：标记最小z值
     fig.add_annotation(
         x=min_z_x, y=min_z_y,
         text=f"Min z: {min_z_val:.2f}",
-        font=dict(size=16, color="#222"),  # 深色字体
+        font=dict(size=42, color="#000"),  # 根据您的要求设置字体颜色
         showarrow=True,
-        arrowcolor="#222",  # 深色箭头
+        arrowcolor="#fff",
+        arrowwidth=4,
         arrowhead=2,
-        ax=40, ay=-40,  # 箭头偏移
-        bgcolor="#fff",  # 白色背景
-        bordercolor="#222",
-        borderpad=4
+        ax=ax_offset,  # 使用动态计算的x偏移
+        ay=ay_offset,  # 使用动态计算的y偏移
+        bgcolor="#fff",  # 根据您的要求设置背景颜色
+        bordercolor="#fff",
+        borderpad=12
     )
     # fig.add_annotation(
     #     x=x_min + (x_max-x_min)*0.1, y=y_max, text=title,
     #     font=dict(size=14, color="#000"), showarrow=False
     # )
     if output_file:
-        fig.write_image(output_file)
+        fig.write_image(output_file, width=2400, height=1600)
         print(f"\n拟合等高线图已保存至: {output_file}")
     else:
         fig.show()
@@ -223,14 +287,82 @@ def create_optimized_heatmap(input_file: str, output_file: Optional[str] = None,
     print("\n生成拟合+平滑热力图...")
     plot_fitted_heatmap(df, metric, fit_out)
 
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(
+#         description='生成原始与拟合的网络性能热力图 (交互式plotly)',
+#         formatter_class=argparse.RawTextHelpFormatter
+#     )
+#     parser.add_argument('input_file', type=str, help='由 ue_monitor_old.py 生成的CSV数据文件路径。')
+#     parser.add_argument('-o', '--output', type=str, help='热力图保存路径 (如: heatmap.png/pdf/svg)。')
+#     parser.add_argument('-m', '--metric', type=str, default=DEFAULT_METRIC, help=f'可视化的性能指标 (默认: {DEFAULT_METRIC})')
+#     args = parser.parse_args()
+#
+#     create_optimized_heatmap(args.input_file, args.output, args.metric)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='生成原始与拟合的网络性能热力图 (交互式plotly)',
+        description='批量生成多个文件的网络性能热力图。',
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument('input_file', type=str, help='由 ue_monitor_old.py 生成的CSV数据文件路径。')
-    parser.add_argument('-o', '--output', type=str, help='热力图保存路径 (如: heatmap.png/pdf/svg)。')
-    parser.add_argument('-m', '--metric', type=str, default=DEFAULT_METRIC, help=f'可视化的性能指标 (默认: {DEFAULT_METRIC})')
+    parser.add_argument('input_path', type=str,
+                        help='单个CSV文件路径 或 包含多个CSV文件的文件夹路径。')
+    parser.add_argument('-o', '--output', type=str,
+                        help='热力图保存的文件夹路径 (可选)。\n如果未提供，图片将保存在输入文件相同的位置。')
+    parser.add_argument('-m', '--metric', type=str, default=DEFAULT_METRIC,
+                        help=f'可视化的性能指标 (默认: {DEFAULT_METRIC})')
+    parser.add_argument('--ext', type=str, default='png',
+                        help='输出图片的文件扩展名 (例如: png, pdf, svg)。\n默认: png')
     args = parser.parse_args()
 
-    create_optimized_heatmap(args.input_file, args.output, args.metric)
+    # --- 主要逻辑更新 ---
+
+    # 1. 获取所有需要处理的输入文件列表
+    if os.path.isdir(args.input_path):
+        # 如果输入的是文件夹，则查找其中所有的.csv文件
+        search_pattern = os.path.join(args.input_path, '*.csv')
+        input_files = glob.glob(search_pattern)
+        print(f"在文件夹 '{args.input_path}' 中找到 {len(input_files)} 个CSV文件。")
+    elif os.path.isfile(args.input_path):
+        # 如果输入的是单个文件，则将其放入列表以便统一处理
+        input_files = [args.input_path]
+    else:
+        print(f"错误：提供的路径 '{args.input_path}' 不是一个有效的文件或文件夹。")
+        exit(1)
+
+    if not input_files:
+        print("未找到任何需要处理的 .csv 文件。")
+        exit(0)
+
+    # 2. 确定输出目录
+    output_dir = args.output
+    if output_dir:
+        # 如果指定了输出目录，则创建它（如果不存在）
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"输出文件将保存到: {output_dir}")
+    else:
+        print("未指定输出目录，文件将保存在原位置。")
+
+    # 3. 遍历每个文件并生成热力图
+    for input_file in input_files:
+        try:
+            print(f"\n--- 正在处理: {os.path.basename(input_file)} ---")
+
+            # 从输入文件名构建输出文件名
+            # 例如：'path/to/data_part1.csv' -> 'data_part1'
+            base_name = os.path.splitext(os.path.basename(input_file))[0]
+            output_filename = f"{base_name}.{args.ext}"
+
+            if output_dir:
+                # 指定了输出目录
+                output_path = os.path.join(output_dir, output_filename)
+            else:
+                # 未指定，保存在输入文件旁边
+                output_path = os.path.join(os.path.dirname(input_file), output_filename)
+
+            # 调用你的核心函数生成图像
+            create_optimized_heatmap(input_file, output_path, args.metric)
+
+        except Exception as e:
+            print(f"处理文件 {input_file} 时发生错误: {e}")
+
+    print("\n所有文件处理完毕！")
